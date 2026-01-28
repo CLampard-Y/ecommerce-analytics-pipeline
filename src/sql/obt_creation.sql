@@ -1,3 +1,7 @@
+/*
+ * @title: Obt Creation(宽表创建)
+ * @description: 将已有事实表中的信息进行聚合、连接,创建宽表
+ */
 DROP TABLE IF EXISTS analysis.analysis_orders_obt;
 DROP SCHEMA IF EXISTS analysis;
 
