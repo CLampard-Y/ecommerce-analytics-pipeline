@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Data files (不上传数据)
+data/
+*.csv
+
+# System files
+.DS_Store
