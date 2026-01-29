@@ -11,3 +11,6 @@ data/
 
 # System files
 .DS_Store
+
+# Link information
+.env
