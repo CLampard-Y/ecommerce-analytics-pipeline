@@ -1,4 +1,7 @@
-
+/*
+ * @title:RFM Creation(用户RFM表的创建)
+ * @description:从obt表出发,创建RFM表,同时计算90天/365天/至今的LTV
+ */
 
 -- ===================================
 -- 1. 用户维度汇总	
@@ -9,16 +12,17 @@ CREATE TABLE analysis.analysis_user_metrics AS
 WITH user_orders AS (
     SELECT
         user_id,
-        -- 用户首次下单日期(用于定义"90天窗口")
+        -- 用户首次下单日期(用于后续定义"90天/365天/长期周期")
         MIN(purchase_ts::date) AS first_order_date,
-        -- 用户最近一次下单日期(用于Recency)
+        -- 用户最近一次下单日期(用于Recency计算)
         MAX(purchase_ts::date) AS last_order_date,
         -- 用户订单数(F)
         COUNT(*) AS frequency,
         -- 用户总GMV(M)
         SUM(gmv) AS monetary,
+        -- 平均延迟交付时间(负数代表提前送达)
         AVG(delay_days) AS avg_delay_days,
-        -- 严重延迟占比
+        -- 严重延迟交付占比
         AVG(CASE WHEN delivery_status='Late_Severe' THEN 1 ELSE 0 END) AS severe_late_rate
     FROM analysis.analysis_orders_obt
     GROUP BY user_id
@@ -31,9 +35,11 @@ ltv_calc AS (
         -- 90天LTV:反映短期留存价值
         SUM(CASE WHEN a.purchase_ts::date <= (u.first_order_date + INTERVAL '90 days')
         			THEN a.gmv ELSE 0 END) AS monetary_90d,
-        -- 365天LTV:反映长期留存价值
+        -- 365天LTV:反映中长期留存价值
         SUM(CASE WHEN a.purchase_ts::date <= (u.first_order_date + INTERVAL '365 days')
-        			THEN a.gmv ELSE 0 END) AS monetary_365d
+        			THEN a.gmv ELSE 0 END) AS monetary_365d,
+ 		-- 至今LTV:反映长期留存价值
+        SUM(a.gmv) AS monetary_long
 	FROM analysis.analysis_orders_obt a
 	LEFT JOIN user_orders u
 		ON a.user_id = u.user_id
@@ -47,7 +53,8 @@ SELECT
     u.*,
     -- 空值处理
     COALESCE(l.monetary_90d, 0) AS monetary_90d,
-    COALESCE(l.monetary_365d, 0) AS monetary_365d
+    COALESCE(l.monetary_365d, 0) AS monetary_365d,
+    COALESCE(l.monetary_long, 0) AS monetary_long
 FROM user_orders u
 LEFT JOIN ltv_calc l
 	ON u.user_id = l.user_id;
@@ -67,7 +74,7 @@ WITH base AS (
         -- 窗口函数 + interval "1 day"
         --EXTRACT(DAY FROM (MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date))
         --(MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date)::int AS recency_days
-        (MAX(last_order_date) OVER ()::date + 1 - last_order_date::date) AS recency_days
+        (MAX(last_order_date) OVER ()::date - last_order_date::date -1) AS recency_days
     FROM analysis.analysis_user_metrics
 )
 
@@ -96,12 +103,6 @@ SELECT
     
     -- LTV分:连续变量
     NTILE(5) OVER (ORDER BY monetary_90d ASC) AS ltv90_score,
-    NTILE(5) OVER (ORDER BY monetary_365d ASC) AS ltv365_score
+    NTILE(5) OVER (ORDER BY monetary_365d ASC) AS ltv365_score,
+    NTILE(5) OVER (ORDER BY monetary_long ASC) AS ltvlong_score
 FROM base;
-
-
-
-
-
-
-
