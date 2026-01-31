@@ -1,6 +1,6 @@
 /*
  * @title:RFM Creation(用户RFM表的创建)
- * @description:从obt表出发,创建RFM表,同时计算90天/365天/至今的LTV
+ * @description:从obt表出发,先按用户维度进行汇总,随后创建RFM表
  */
 
 -- ===================================
@@ -9,7 +9,23 @@
 DROP TABLE IF EXISTS analysis.analysis_user_metrics;
 
 CREATE TABLE analysis.analysis_user_metrics AS
-WITH user_orders AS (
+WITH 
+
+-- 选取最近订单对应的州定为主州
+user_state AS (
+	-- PostgreSQL特有语法
+	-- 逻辑:对每个user_id分组,只保留一行(不是随机保留,而是根据ORDER BY决定)
+	SELECT DISTINCT ON (user_id)
+		user_id,
+		customer_state AS primary_state
+	FROM analysis.analysis_orders_obt
+	WHERE customer_state IS NOT NULL
+	-- 先按user_id排序,让同一个user_id的所有订单都排列在一起
+	-- 在同一个user_id内按purchase_ts DESC排序,让最近的订单排在最前面
+	ORDER BY user_id,purchase_ts DESC
+),
+
+user_orders AS (
     SELECT
         user_id,
         -- 用户首次下单日期(用于后续定义"90天/365天/长期周期")
@@ -28,6 +44,17 @@ WITH user_orders AS (
     GROUP BY user_id
 ),
 
+-- 将用户所在州也纳入RFM表,后续进行分层T-Test需要
+-- 用户所在州和user_id不是一对一的(一个用户可能会有不同州的订单),如果直接连接会发生扇出
+user_base AS (
+	SELECT 
+		o.*,
+		s.primary_state AS primary_state
+	FROM user_orders o
+	LEFT JOIN user_state s 
+		ON o.user_id = s.user_id
+),
+
 -- 计算LTV
 ltv_calc AS (
     SELECT
@@ -37,11 +64,9 @@ ltv_calc AS (
         			THEN a.gmv ELSE 0 END) AS monetary_90d,
         -- 365天LTV:反映中长期留存价值
         SUM(CASE WHEN a.purchase_ts::date <= (u.first_order_date + INTERVAL '365 days')
-        			THEN a.gmv ELSE 0 END) AS monetary_365d,
- 		-- 至今LTV:反映长期留存价值
-        SUM(a.gmv) AS monetary_long
+        			THEN a.gmv ELSE 0 END) AS monetary_365d
 	FROM analysis.analysis_orders_obt a
-	LEFT JOIN user_orders u
+	LEFT JOIN user_base u
 		ON a.user_id = u.user_id
 	-- 防止存在purchase_ts比first_order_date更早的情况
 	-- 一般不会存在,但工程上需要添加防御性代码
@@ -54,14 +79,24 @@ SELECT
     -- 空值处理
     COALESCE(l.monetary_90d, 0) AS monetary_90d,
     COALESCE(l.monetary_365d, 0) AS monetary_365d,
-    COALESCE(l.monetary_long, 0) AS monetary_long
-FROM user_orders u
+    -- 直接将用户GMV作为长期LTV
+    COALESCE(u.monetary, 0) AS monetary_long
+FROM user_base u
 LEFT JOIN ltv_calc l
 	ON u.user_id = l.user_id;
 
 
 -- ==================================
--- 2. 创建RFM表
+-- 2. 建表验收
+-- ==================================
+-- 行数必须等于 distinct user_id
+SELECT
+	(SELECT COUNT(*) FROM analysis.analysis_user_metrics) AS metrics_rows,
+	(SELECT COUNT(DISTINCT user_id) FROM analysis.analysis_orders_obt) AS obt_users;
+
+
+-- ==================================
+-- 3. 创建RFM表
 -- ==================================
 DROP TABLE IF EXISTS analysis.analysis_user_rfm;
 
@@ -74,7 +109,7 @@ WITH base AS (
         -- 窗口函数 + interval "1 day"
         --EXTRACT(DAY FROM (MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date))
         --(MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date)::int AS recency_days
-        (MAX(last_order_date) OVER ()::date - last_order_date::date -1) AS recency_days
+        (MAX(last_order_date) OVER ()::date - last_order_date::date + 1) AS recency_days
     FROM analysis.analysis_user_metrics
 )
 
