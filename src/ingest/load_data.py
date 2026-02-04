@@ -1,26 +1,38 @@
+# =============================
+# 从源文件(.csv)导入数据
+# =============================
+# 目的: 以TEXT类型导入所有数据,先保证数据能成功导入
+
 import os
 import pandas as pd
 from sqlalchemy import create_engine
 
-# 配置数据库连接
+# -----------------------------
+# 1. 配置数据库连接
+# -----------------------------
 # TODO: 使用环境变量替代硬编码密码
-DB_USER = "web3"
-DB_PASS = "password"  # 请确保这里是你本地真实的密码
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "web3data"
+load_dotenv()
+
+# 从环境变量读取连接信息
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_HOST = os.getenv("DB_HOST","localhost")
+DB_PORT = os.getenv("DB_PORT","5432")
+DB_NAME = os.getenv("DB_NAME")
 
 connection_string = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 engine = create_engine(connection_string)
 
-# 数据目录配置
-DATA_DIR = r"./data"  # 请确保你的 CSV 文件在这个目录下
+# ----------------------------
+# 2. 数据导入
+# ----------------------------
 
+# 请确保你的CSV文件目录
+DATA_DIR = r"./data"
+
+# 定义函数:将CSV文件加载到PostgreSQL数据库中
+# 关键点强制将所有列读取为字符串,防止ID前导零丢失。
 def load_csv_to_pg(csv_path: str, table_name: str, schema: str = "public", if_exists: str = "replace"):
-    """
-    将 CSV 文件加载到 PostgreSQL 数据库中。
-    关键点：强制将所有列读取为字符串，防止 ID 前导零丢失。
-    """
     try:
         # 关键：很多 ID 列必须按字符串读
         df = pd.read_csv(csv_path, dtype=str)
