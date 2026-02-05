@@ -4,14 +4,18 @@
  */
 
 -- ===================================
--- 1. 用户维度汇总	
+-- 一. 用户维度汇总	
 -- ===================================
 DROP TABLE IF EXISTS analysis.analysis_user_metrics;
 
 CREATE TABLE analysis.analysis_user_metrics AS
 WITH 
 
--- 选取最近订单对应的州定为主州
+-- ----------------------------------
+-- 1. 记录用户州信息
+-- ----------------------------------
+-- 目的: 记录用户的州信息,为后续对延迟交付天数与复购率关系的深层T-Test做数据准备
+-- 逻辑: 选取用户最近订单对应的州定为主州
 user_state AS (
 	-- PostgreSQL特有语法
 	-- 逻辑:对每个user_id分组,只保留一行(不是随机保留,而是根据ORDER BY决定)
@@ -25,6 +29,9 @@ user_state AS (
 	ORDER BY user_id,purchase_ts DESC
 ),
 
+-- --------------------------------
+-- 2. 初步创建用户总消费信息表
+-- --------------------------------
 user_orders AS (
     SELECT
         user_id,
@@ -36,7 +43,7 @@ user_orders AS (
         COUNT(*) AS frequency,
         -- 用户总GMV(M)
         SUM(gmv) AS monetary,
-        -- 平均延迟交付时间(负数代表提前送达)
+        -- 每个用户所有订单的平均延迟交付时间(负数代表提前送达)
         AVG(delay_days) AS avg_delay_days,
         -- 严重延迟交付占比
         AVG(CASE WHEN delivery_status='Late_Severe' THEN 1 ELSE 0 END) AS severe_late_rate
@@ -44,8 +51,10 @@ user_orders AS (
     GROUP BY user_id
 ),
 
--- 将用户所在州也纳入RFM表,后续进行分层T-Test需要
--- 用户所在州和user_id不是一对一的(一个用户可能会有不同州的订单),如果直接连接会发生扇出
+-- ------------------------------------
+-- 3. 将用户所在州与总消费信息表连接
+-- ------------------------------------
+-- 注意: 用户所在州和user_id不是一对一的(一个用户可能会有不同州的订单),如果直接连接会发生扇出
 user_base AS (
 	SELECT 
 		o.*,
@@ -55,7 +64,9 @@ user_base AS (
 		ON o.user_id = s.user_id
 ),
 
--- 计算LTV
+-- -----------------------------------
+-- 4. 初步计算用户LTV
+-- -----------------------------------
 ltv_calc AS (
     SELECT
         a.user_id,
@@ -73,13 +84,18 @@ ltv_calc AS (
 	WHERE a.purchase_ts::date >= u.first_order_date
 	GROUP BY a.user_id
  )
-        
+
+-- ----------------------------------
+-- 5. 创建完整用户总消费信息表
+-- ----------------------------------
 SELECT
     u.*,
-    -- 空值处理
+
+    -- 防NULL处理
     COALESCE(l.monetary_90d, 0) AS monetary_90d,
     COALESCE(l.monetary_365d, 0) AS monetary_365d,
-    -- 直接将用户GMV作为长期LTV
+
+    -- 将用户总GMV作为长期LTV
     COALESCE(u.monetary, 0) AS monetary_long
 FROM user_base u
 LEFT JOIN ltv_calc l
@@ -87,28 +103,29 @@ LEFT JOIN ltv_calc l
 
 
 -- ==================================
--- 2. 建表验收
+-- 二. 建表验收
 -- ==================================
--- 行数必须等于 distinct user_id
+-- 逻辑: 创建的用户总信息表行数必须等于distinct user_id
 SELECT
 	(SELECT COUNT(*) FROM analysis.analysis_user_metrics) AS metrics_rows,
 	(SELECT COUNT(DISTINCT user_id) FROM analysis.analysis_orders_obt) AS obt_users;
 
 
 -- ==================================
--- 3. 创建RFM表
+-- 三. 创建RFM表
 -- ==================================
 DROP TABLE IF EXISTS analysis.analysis_user_rfm;
 
 CREATE TABLE analysis.analysis_user_rfm AS
 
-WITH base AS (
+WITH 
+base AS (
     SELECT
         *,
         -- 取分析时间点为数据集最大时间 + 1天
         -- 窗口函数 + interval "1 day"
-        --EXTRACT(DAY FROM (MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date))
-        --(MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date)::int AS recency_days
+        -- 错误方法1:EXTRACT(DAY FROM (MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date))
+        -- 错误方法2:(MAX(last_order_date) OVER () + INTERVAL '1 day' - last_order_date)::int AS recency_days
         (MAX(last_order_date) OVER ()::date - last_order_date::date + 1) AS recency_days
     FROM analysis.analysis_user_metrics
 )
