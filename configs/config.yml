@@ -1,0 +1,14 @@
+# ================================================
+# Ecommerce analytics pipeline configuration
+# Scope: paths + database schema conventions
+# NOTE: keep secrets in environment variables (.env), not here.
+# ================================================
+
+paths:
+  data_dir: "data/"
+  sql_dir: "sql/"
+  outputs_dir: "outputs/"
+
+warehouse:
+  raw_schema: "olist"        # matches SQL references like olist.olist_orders_dataset
+  analytics_schema: "analysis"

@@ -9,8 +9,20 @@ __pycache__/
 data/
 *.csv
 
+# Generated artifacts
+outputs/
+
 # System files
 .DS_Store
 
 # Link information
 .env
+
+# Virtualenvs / caches
+.venv/
+.pytest_cache/
+
+# Packaging artifacts
+*.egg-info/
+build/
+dist/
