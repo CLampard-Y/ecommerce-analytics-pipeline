@@ -12,10 +12,13 @@ class TestRepoLayout(unittest.TestCase):
             root / "sql" / "models" / "20_obt" / "create_obt.sql",
             root / "sql" / "analyses" / "analysis_rfm.sql",
             root / "sql" / "dq" / "check_obt.sql",
-            root / "notebooks" / "analysis_feature.ipynb",
-            root / "notebooks" / "analysis_hook_seller.ipynb",
-            root / "notebooks" / "repurchase_diagnosis.ipynb",
+            root / "notebooks" / "01_obt_feature_analysis.ipynb",
+            root / "notebooks" / "02_seller_hook_analysis.ipynb",
+            root / "notebooks" / "03_repurchase_diagnosis.ipynb",
             root / "src" / "ecommerce_analytics_pipeline" / "ingest.py",
+            root / "src" / "ecommerce_analytics_pipeline" / "phase1_ingest.py",
+            root / "src" / "ecommerce_analytics_pipeline" / "paths.py",
+            root / "src" / "ecommerce_analytics_pipeline" / "project_paths.py",
             root / "src" / "ingest" / "load_data.py",
         ]
 

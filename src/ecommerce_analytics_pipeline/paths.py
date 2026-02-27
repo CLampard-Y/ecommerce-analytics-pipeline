@@ -1,22 +1,12 @@
-"""Centralized path helpers.
+"""Compatibility wrapper for path helpers.
 
-Avoids notebook-relative-path drift by anchoring all file lookups
-to the repository root.
+Use `project_paths.py` for the canonical helpers.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-
-def project_root() -> Path:
-    # src/ecommerce_analytics_pipeline/paths.py -> repo root
-    return Path(__file__).resolve().parents[2]
-
-
-def sql_dir() -> Path:
-    return project_root() / "sql"
-
-
-def outputs_dir() -> Path:
-    return project_root() / "outputs"
+from ecommerce_analytics_pipeline.project_paths import (  # noqa: F401
+    outputs_dir,
+    project_root,
+    sql_dir,
+)
