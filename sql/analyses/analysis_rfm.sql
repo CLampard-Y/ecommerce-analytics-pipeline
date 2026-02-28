@@ -29,6 +29,15 @@ user_state AS (
 	ORDER BY user_id,purchase_ts DESC
 ),
 
+-- ----------------------------------
+-- 1.5 数据集边界(用于右删失判断)
+-- ----------------------------------
+dataset_bounds AS (
+	SELECT
+		MAX(purchase_ts::date) AS dataset_end_date
+	FROM analysis.analysis_orders_obt
+),
+
 -- --------------------------------
 -- 2. 初步创建用户总消费信息表
 -- --------------------------------
@@ -49,6 +58,26 @@ user_orders AS (
         AVG(CASE WHEN delivery_status='Late_Severe' THEN 1 ELSE 0 END) AS severe_late_rate
     FROM analysis.analysis_orders_obt
     GROUP BY user_id
+),
+
+-- ----------------------------------
+-- 2.5 90天窗口复购(含右删失)
+-- ----------------------------------
+user_repurchase_90d_raw AS (
+	SELECT
+		u.user_id,
+		MAX(
+			CASE
+				WHEN a.purchase_ts::date > u.first_order_date
+					AND a.purchase_ts::date <= (u.first_order_date + 90)
+					THEN 1
+				ELSE 0
+			END
+		) AS repurchase_within_90d_raw
+	FROM analysis.analysis_orders_obt a
+	INNER JOIN user_orders u
+		ON a.user_id = u.user_id
+	GROUP BY u.user_id
 ),
 
 -- ------------------------------------
@@ -91,6 +120,18 @@ ltv_calc AS (
 SELECT
     u.*,
 
+	-- 90天窗口复购(右删失)
+	CASE
+		WHEN d.dataset_end_date >= (u.first_order_date + 90)
+			THEN 1
+		ELSE 0
+	END AS eligible_repurchase_90d,
+	CASE
+		WHEN d.dataset_end_date >= (u.first_order_date + 90)
+			THEN COALESCE(r.repurchase_within_90d_raw, 0)
+		ELSE NULL
+	END AS repurchase_within_90d,
+
     -- 防NULL处理
     COALESCE(l.monetary_90d, 0) AS monetary_90d,
     COALESCE(l.monetary_365d, 0) AS monetary_365d,
@@ -98,8 +139,12 @@ SELECT
     -- 将用户总GMV作为长期LTV
     COALESCE(u.monetary, 0) AS monetary_long
 FROM user_base u
+CROSS JOIN dataset_bounds d
+LEFT JOIN user_repurchase_90d_raw r
+	ON u.user_id = r.user_id
 LEFT JOIN ltv_calc l
 	ON u.user_id = l.user_id;
+
 
 
 -- ==================================

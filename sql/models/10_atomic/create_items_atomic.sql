@@ -26,6 +26,7 @@ base_joined AS (
         
         -- 关联订单级的体验指标(评分、延迟)
         o.review_score,
+        o.has_review,
         o.delay_days,
         
         -- 延迟交付标记(二元0,1取值)

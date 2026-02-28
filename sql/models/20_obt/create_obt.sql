@@ -113,14 +113,14 @@ SELECT
 
     -- 履约链路拆解:订单通过所需时间,卖家发货所需时间,货物运输所需时间,货物交付总时间
     EXTRACT(EPOCH FROM (b.order_approved_at::timestamp - b.order_purchase_timestamp::timestamp)) / 3600 AS approve_hours,
-    EXTRACT(DAY FROM (b.order_delivered_carrier_date::timestamp - b.order_approved_at::timestamp)) AS handling_days,
-    EXTRACT(DAY FROM (b.order_delivered_customer_date::timestamp - b.order_delivered_carrier_date::timestamp)) AS shipping_days,
-    EXTRACT(DAY FROM (b.order_delivered_customer_date::timestamp - b.order_purchase_timestamp::timestamp)) AS total_fulfill_days,
+    EXTRACT(EPOCH FROM (b.order_delivered_carrier_date::timestamp - b.order_approved_at::timestamp)) / 86400.0 AS handling_days,
+    EXTRACT(EPOCH FROM (b.order_delivered_customer_date::timestamp - b.order_delivered_carrier_date::timestamp)) / 86400.0 AS shipping_days,
+    EXTRACT(EPOCH FROM (b.order_delivered_customer_date::timestamp - b.order_purchase_timestamp::timestamp)) / 86400.0 AS total_fulfill_days,
 
     -- 送达和预计送达时间差(延迟送达天数)
     -- 晚送达:差值为正
     -- 提前或按时送达:差值为负或0
-    EXTRACT(DAY FROM (b.order_delivered_customer_date::timestamp - b.order_estimated_delivery_date::timestamp)) AS delay_days,
+    EXTRACT(EPOCH FROM (b.order_delivered_customer_date::timestamp - b.order_estimated_delivery_date::timestamp)) / 86400.0 AS delay_days,
 
     -- 根据延迟送达天数不同情况进行标记
     -- OnTime:提前或按时送达
@@ -151,7 +151,8 @@ SELECT
 
     -- 防NULL处理
     COALESCE(p.payment_method, 'unknown') AS payment_method,
-    COALESCE(r.review_score, 0) AS review_score,
+    r.review_score AS review_score,
+    CASE WHEN r.review_score IS NULL THEN 0 ELSE 1 END AS has_review,
 
     -- 先行计算,方便后续直接做Month-Over-Month(MoM)分析(如果需要)
     TO_CHAR(b.order_purchase_timestamp::timestamp,'YYYY-MM') AS purchase_month,
