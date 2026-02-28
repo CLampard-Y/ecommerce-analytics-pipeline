@@ -6,3 +6,5 @@ jupyter
 matplotlib
 seaborn
 statsmodels
+scipy
+scikit-learn
