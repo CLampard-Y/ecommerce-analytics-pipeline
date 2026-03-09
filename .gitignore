@@ -10,7 +10,7 @@ data/
 *.csv
 
 # Generated artifacts
-outputs/
+#outputs/
 
 # System files
 .DS_Store
