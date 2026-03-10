@@ -36,7 +36,7 @@ python -m unittest
 
 ### Local files
 
-导入脚本默认读取仓库根目录下的 `data/`（即 `./data/`）中的以下文件：
+导入脚本默认读取仓库根目录下的 `data/`（即 `./data/`）中的以下文件。这 8 个文件共同构成当前仓库的 raw baseline，缺一不可：
 
 - `olist_orders_dataset.csv`
 - `olist_customers_dataset.csv`
@@ -59,7 +59,7 @@ python -m unittest
 
 ## Phase 1: Ingestion
 
-目标：把本地 `CSV` 导入 `RAW_SCHEMA`（默认 `olist`）下的 raw tables。
+目标：把本地 8 个 core CSV 全量导入 `RAW_SCHEMA`（默认 `olist`）下的 raw tables，并把 Phase 1 的成功定义收紧为“8 个文件全部存在且全部成功落库”。
 
 推荐入口：
 
@@ -77,8 +77,9 @@ python src/ingest/load_data.py
 
 完成后应看到：
 
-- raw tables 被创建在 `RAW_SCHEMA` 下（默认 `olist`）
-- 当前导入脚本会处理上文列出的 8 个核心文件
+- `RAW_SCHEMA`（默认 `olist`）下能看到与上文 8 个 core CSV 对应的 raw tables
+- ingestion 对这 8 个 core CSV 采用 fail-fast：缺任意一个文件都会直接报错退出，不再继续后续加载
+- 若任一 `read_csv()` / `to_sql()` 失败，脚本会返回失败而不是打印 warning 后伪成功
 - `id` 类字段按字符串读取，避免前导零丢失
 
 ## Phase 2: Warehouse Models
@@ -181,7 +182,8 @@ jupyter lab
 
 ## Verification Checklist
 
-- raw tables 已落到 `RAW_SCHEMA`（默认 `olist`）
+- 8 个 core CSV 已全部存在于 `./data/`（或你指定的 `DATA_DIR`）
+- 8 张对应 raw tables 已全部落到 `RAW_SCHEMA`（默认 `olist`）
 - `analysis.analysis_orders_obt`、`analysis.analysis_items_atomic`、`analysis.analysis_user_first_order`、`analysis.analysis_user_first_order_categories`、`analysis.analysis_user_metrics`、`analysis.analysis_user_rfm` 全部可查询
 - [`../sql/dq/check_obt.sql`](../sql/dq/check_obt.sql) 与 [`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql) 的关键异常字段为 `0` 或接近 `0`
 - 三个 notebook 能按顺序执行，且图表已落到 `../outputs/figures/`
@@ -190,6 +192,7 @@ jupyter lab
 ## Troubleshooting
 
 - `Schema mismatch`：SQL 中使用 `Olist.olist_*`（未加引号），在 `Postgres` 中通常会解析成小写 `olist`；推荐保持 `RAW_SCHEMA=olist`，避免 raw schema 与 SQL 脱节。
+- `Missing core CSV`：当前 Phase 1 不再允许 partial raw load；只要 8 个 core CSV 缺任意一个，ingestion 就会直接失败。先补齐文件，再继续后续阶段。
 - `DATABASE_URL`：Python 入口并不强依赖它；如果你想减少本地配置摩擦，可以额外导出一个连接串，复用到 `python` 和 `psql` 示例。若没有该变量，请按你的 shell / `libpq` 方式改写命令即可。
 - `Destructive SQL`：`create_obt.sql` 会重建整个 `analysis` schema，其他模型脚本也会 drop table；共享环境务必谨慎。
 - `Notebook 03 raw dependency`：卖家治理分支不仅依赖 `analysis.*`，还依赖 raw `olist_order_items_dataset` 与 `olist_sellers_dataset`；如果这两张 raw 表不完整，notebook 03 会直接失真。

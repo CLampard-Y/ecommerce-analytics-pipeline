@@ -1,208 +1,242 @@
-# Data Dictionary (Interview-Friendly)
+# Data Dictionary
 
-目标：把“在业务上讲的每一个指标”落到可追溯的表、粒度（grain）、主键（PK）和口径。
+目标：把仓库里出现的核心指标、表、粒度和分母落到可追溯的定义源上。
 
-本项目的分析层主要依赖以下表：
-- `analysis.analysis_orders_obt`：订单粒度 OBT（体验归因主干）
-- `analysis.analysis_items_atomic`：商品粒度 atomic（钩子品类 / 供给侧治理输入）
-- `analysis.analysis_user_first_order`：用户粒度首单映射（首个 delivered 订单，确定性 tie-break）
-- `analysis.analysis_user_first_order_categories`：首单品类桥表（(user_id, category) 粒度，用于首单获客/留存）
-- `analysis.analysis_user_metrics`：用户粒度指标汇总（RFM/LTV 基础）
-- `analysis.analysis_user_rfm`：用户粒度 RFM/LTV + scoring（复购诊断输入）
+Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trust-map) · [Raw Layer](#raw-layer) · [Conventions](#conventions) · [Interpretation Boundaries](#interpretation-boundaries) · [Core Models](#core-models) · [DQ Gates](#dq-gates) · [Related Assets](#related-assets)
 
-raw 层表（默认 schema=`olist`）：
-- `olist.olist_orders_dataset`
-- `olist.olist_customers_dataset`
-- `olist.olist_order_items_dataset`
-- `olist.olist_order_payments_dataset`
-- `olist.olist_order_reviews_dataset`
-- `olist.olist_products_dataset`
-- `olist.olist_sellers_dataset`
-- `olist.product_category_name_translation`
+## How to Read
 
----
+读这个文档时，建议先回答四个问题：
 
-## Conventions | 统一约定
+- 这个指标来自哪个 grain：`order_id`、`(order_id, order_item_id)` 还是 `user_id`
+- 它的主键是什么，是否可能被错误 JOIN 放大
+- 它的定义源在什么 SQL 文件里
+- 它在解释前需要先通过哪道 DQ gate
 
-- **Time**：raw 入库时 timestamp 字段为 TEXT；在 OBT 中统一转为 `timestamp`，并派生 `_ts` 字段。
-- **Delay sign**：`delay_days > 0` 表示晚到；`<= 0` 表示准时或提前（在相关性分析中常会将负数 clip 到 0）。
-- **Grain guard**：orders 粒度的表，任何来自 item/payment/review 的信息必须先聚合到 `order_id` 再 JOIN，避免 fan-out。
+如果一个结论说不清这四件事，就不应该直接进入业务解释。
 
----
+## Metric Trust Map
 
-## `analysis.analysis_orders_obt` (Order-grain OBT)
+| 资产 | Grain | 定义来源 | DQ / 验证 | 主要用途 |
+|---|---|---|---|---|
+| raw `olist.*` tables | 原始记录粒度 | [`../src/ecommerce_analytics_pipeline/phase1_ingest.py`](../src/ecommerce_analytics_pipeline/phase1_ingest.py) | 8 core CSV baseline 完整落库 + schema 对齐 | 作为建模输入 |
+| `analysis.analysis_orders_obt` | `order_id` | [`../sql/models/20_obt/create_obt.sql`](../sql/models/20_obt/create_obt.sql) | [`../sql/dq/check_obt.sql`](../sql/dq/check_obt.sql) | 履约、评价、订单金额主干 |
+| `analysis.analysis_items_atomic` | `(order_id, order_item_id)` | [`../sql/models/10_atomic/create_items_atomic.sql`](../sql/models/10_atomic/create_items_atomic.sql) | 依赖上游 `OBT` 门禁 | 品类与卖家分析输入 |
+| `analysis.analysis_user_first_order` | `user_id` | [`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql) | [`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql) | 首单映射 |
+| `analysis.analysis_user_first_order_categories` | `(user_id, category)` | [`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql) | [`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql) | 钩子品类筛选 |
+| `analysis.analysis_user_metrics` | `user_id` | [`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql) | 上游门禁 + 用户行数 sanity check | `90d` 复购、LTV、州信息 |
+| `analysis.analysis_user_rfm` | `user_id` | [`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql) | 继承上游验证 | RFM / LTV scoring |
 
-**Grain**：1 row per `order_id`（仅保留 `order_status='delivered'` 且 `order_delivered_customer_date IS NOT NULL` 的订单）。
+## Raw Layer
 
-**Primary key**：`order_id`
+当前仓库分析主线以以下 8 个 core CSV 为固定 baseline；它们对应 Phase 1 必须完整落库的 8 张 raw tables，缺一不可：
 
-**Built from**：
-- `olist.olist_orders_dataset` (base)
-- `olist.olist_customers_dataset` (map `customer_id` -> `customer_unique_id`)
-- `olist.olist_order_items_dataset` (aggregated to order)
-- `olist.olist_order_payments_dataset` (aggregated to order)
-- `olist.olist_order_reviews_dataset` (aggregated to order)
+- [`../data/olist_orders_dataset.csv`](../data/olist_orders_dataset.csv)
+- [`../data/olist_customers_dataset.csv`](../data/olist_customers_dataset.csv)
+- [`../data/olist_order_items_dataset.csv`](../data/olist_order_items_dataset.csv)
+- [`../data/olist_order_payments_dataset.csv`](../data/olist_order_payments_dataset.csv)
+- [`../data/olist_order_reviews_dataset.csv`](../data/olist_order_reviews_dataset.csv)
+- [`../data/olist_products_dataset.csv`](../data/olist_products_dataset.csv)
+- [`../data/olist_sellers_dataset.csv`](../data/olist_sellers_dataset.csv)
+- [`../data/product_category_name_translation.csv`](../data/product_category_name_translation.csv)
 
-**Join keys**：
-- orders -> customers: `customer_id`
-- orders -> items/payments/reviews: `order_id`
+补充说明：
 
-**Key columns (Business)**：
-- `user_id`：`customer_unique_id`，用于用户层分析（RFM/LTV/复购）
-- `customer_state`：用户州信息（分层防御/公平性校准）
+- [`../src/ecommerce_analytics_pipeline/phase1_ingest.py`](../src/ecommerce_analytics_pipeline/phase1_ingest.py) 当前对这 8 个 core CSV 采用 fail-fast；任意文件缺失或导入失败，Phase 1 都不应被视为完成。
+- [`../data/olist_geolocation_dataset.csv`](../data/olist_geolocation_dataset.csv) 当前不在导入脚本的 core CSV baseline 中，也没有进入当前 README 主线中的下游模型。
+
+## Conventions
+
+- `Time`：raw 导入时时间字段先按字符串读取；在 [`../sql/models/20_obt/create_obt.sql`](../sql/models/20_obt/create_obt.sql) 中统一转为 `timestamp` 并派生 `_ts` 字段。
+- `Delay sign`：`delay_days > 0` 表示晚到；`delay_days <= 0` 表示准时或提前。
+- `Grain guard`：任何来自 item / payment / review 的信息，进入 order 粒度前都必须先按 `order_id` 聚合，避免 fan-out。
+- `Delivered-only scope`：当前 `OBT` 只保留 `order_status='delivered'` 且 `order_delivered_customer_date IS NOT NULL` 的订单，因此“首单”在本仓库中是“首个 delivered 订单”。
+- `Denominator control`：所有 `90d` 复购口径都必须明确基于 `eligible_repurchase_90d=1` 的用户分母，否则会被右删失机械压低。
+- `Review aggregation`：订单可能存在多条评价，当前 `review_score` 使用 `MIN(review_score)` 聚合，强调低分主导的体验判断。
+
+## Interpretation Boundaries
+
+- `Order-grain OBT` 是当前仓库里最稳定的履约体验信号来源。
+- `90d` 复购只能在 eligible 用户分母上解释；不满足观察窗口的用户应视为 `NULL`，而不是 `0`。
+- 钩子品类分支服务于获客入口筛选，不是品类层面的因果 lift 证明。
+- 卖家治理分支依赖 seller-side SLA proxy 和州内基准校准，不是完美归责。
+- 卖家治理里的 exposure 使用 item `price` 汇总形成 proxy，不应与订单支付口径的 `GMV` 混为一谈。
+
+## Core Models
+
+### `analysis.analysis_orders_obt`
+
+- `Grain`：1 row per `order_id`，只保留 delivered 且有送达时间的订单
+- `Primary key`：`order_id`
+- `Built from`：[`olist_orders_dataset.csv`](../data/olist_orders_dataset.csv)、[`olist_customers_dataset.csv`](../data/olist_customers_dataset.csv)、[`olist_order_items_dataset.csv`](../data/olist_order_items_dataset.csv)、[`olist_order_payments_dataset.csv`](../data/olist_order_payments_dataset.csv)、[`olist_order_reviews_dataset.csv`](../data/olist_order_reviews_dataset.csv)
+- `Definition source`：[`../sql/models/20_obt/create_obt.sql`](../sql/models/20_obt/create_obt.sql)
+- `Used by`：[`../notebooks/01_obt_feature_analysis.ipynb`](../notebooks/01_obt_feature_analysis.ipynb)、[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)、[`../sql/models/10_atomic/create_items_atomic.sql`](../sql/models/10_atomic/create_items_atomic.sql)
+
+关键字段：
+
+- `user_id`：来自 `customer_unique_id`，用于用户层分析
+- `customer_state`：用户州信息
 - `purchase_ts` / `approved_ts` / `carrier_ts` / `delivered_ts` / `estimated_ts`：履约链路关键时间点
 
-**Key metrics (Definitions)**：
-- `gmv`：订单 GMV（payments 聚合）
-  - 口径：`SUM(payment_value)` by `order_id`
-  - 用途：作为订单金额主口径，并在 DQ 中与 raw payments 做一致性校验
-- `items_cnt`：订单 item 行数（items 聚合）
-- `sellers_cnt`：订单涉及卖家数（`COUNT(DISTINCT seller_id)`）
-- `items_value` / `freight_value`：items 粒度价格与运费聚合
-- `freight_ratio`：`freight_value / gmv`（`gmv<=0` 则为 0）
-- `avg_item_price`：`gmv / items_cnt`（用 `NULLIF(items_cnt, 0)` 保护分母）
-- `review_score`：订单评分（取最小值；可为 NULL）
-   - 业务解释：一个订单可能多次被评价；用 `MIN(review_score)` 体现“木桶效应”（低分更容易主导体验判断）
-   - 缺失解释：不是每个 delivered 订单都有评价；缺失不等于差评
-- `has_review`：是否存在评价（0/1）
-   - 用途：把“未评价”与“低评分”区分开，避免把缺失当作 0 分
-- `delay_days`：`delivered_ts - estimated_ts`（天；epoch/86400，支持小数）
-   - 正数：晚到；负数/0：提前或准时
-   - 注意：很多分析任务（相关性/归因）会用 `delay_days_clipped = max(delay_days, 0)` 过滤“提前送达的无效变异”
-- `delivery_status`：履约分层
-  - `OnTime`：`delivered_ts <= estimated_ts`
-  - `Late_Small`：晚到且 `<= 3 days`
-  - `Late_Severe`：晚到且 `> 3 days`
+关键指标：
 
-**Operational decomposition (Hours/Days)**：
-- `approve_hours`：`approved_ts - purchase_ts`（小时）
-- `handling_days`：`carrier_ts - approved_ts`（天；epoch/86400，支持小数）
-- `shipping_days`：`delivered_ts - carrier_ts`（天；epoch/86400，支持小数）
-- `total_fulfill_days`：`delivered_ts - purchase_ts`（天；epoch/86400，支持小数）
+- `gmv`：按 `order_id` 聚合 `SUM(payment_value)`，是订单金额主口径
+- `items_cnt` / `sellers_cnt`：订单商品数、卖家数
+- `items_value` / `freight_value`：item 粒度金额与运费聚合
+- `freight_ratio`：`freight_value / gmv`
+- `avg_item_price`：`gmv / items_cnt`
+- `review_score`：订单评价最低分，用于表达低分主导的体验信号
+- `has_review`：是否存在评价，避免把“未评价”误当成低分
+- `delay_days`：`delivered_ts - estimated_ts`，单位为天，可为负值
+- `delivery_status`：`OnTime` / `Late_Small` / `Late_Severe`
+- `approve_hours` / `handling_days` / `shipping_days` / `total_fulfill_days`：履约链路拆解指标
 
-**Edge cases to defend in interviews**：
-- `carrier_ts` 可能为空，导致 handling/shipping 指标为 NULL（OBT 仍保留订单；分析时需要显式处理）
-- `delay_days` 为负：提前送达不等于“越早越好”，否则相关性/模型会被“无效变异”稀释
-- `gmv` 与 `items_value` 不一定严格一致（折扣/分摊/退款/运费口径差异）；本项目以 payments 聚合的 `gmv` 为主口径
+使用注意：
 
----
+- `carrier_ts` 可能为空，因此 `handling_days` / `shipping_days` 允许为 `NULL`
+- `delay_days` 为负不代表可以线性理解成“越早越好”
+- `gmv` 与 `items_value` 不要求严格相等；当前仓库以 payments 聚合得到的 `gmv` 为订单金额主口径
 
-## `analysis.analysis_items_atomic` (Item-grain atomic)
+### `analysis.analysis_items_atomic`
 
-**Grain**：1 row per `(order_id, order_item_id)`（订单中的每一件商品）。
+- `Grain`：1 row per `(order_id, order_item_id)`
+- `Primary key`：`(order_id, order_item_id)`
+- `Built from`：[`olist_order_items_dataset.csv`](../data/olist_order_items_dataset.csv)、[`olist_products_dataset.csv`](../data/olist_products_dataset.csv)、[`product_category_name_translation.csv`](../data/product_category_name_translation.csv)、[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
+- `Definition source`：[`../sql/models/10_atomic/create_items_atomic.sql`](../sql/models/10_atomic/create_items_atomic.sql)
+- `Used by`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)、[`../notebooks/03_seller_hook_analysis.ipynb`](../notebooks/03_seller_hook_analysis.ipynb)
 
-**Primary key**：`(order_id, order_item_id)`
+关键字段：
 
-**Built from**：
-- `olist.olist_order_items_dataset` (base)
-- `analysis.analysis_orders_obt` (attach review/delay)
-- `olist.olist_products_dataset` + `olist.product_category_name_translation` (attach category)
-
-**Join keys**：
-- items -> obt: `order_id`
-- items -> products: `product_id`
-- products -> translation: `product_category_name`
-
-**Key columns (Business)**：
 - `seller_id`：供给侧主体
-- `category`：英文品类（用于钩子品类分析）
-- `review_score` / `has_review` / `delay_days`：把体验标签带到商品/卖家粒度
-- `is_late`：`delay_days > 0` 的二元标记（方便分组与聚合）
+- `category`：商品英文品类名
+- `price`：item 价格
+- `review_score` / `has_review` / `delay_days`：从订单粒度贴到 item 粒度的体验标签
+- `is_late`：`delay_days > 0` 的二元标记
 
-**Edge cases**：
-- Mixed basket：一个订单可能包含多个卖家；所以“订单晚到”无法直接归责到卖家（需要 SLA 解耦，见 notebook 03）
-- `category` 可能为空（翻译缺失）；分析时通常要做缺失处理或过滤
+使用注意：
 
----
+- 一个订单可能包含多个卖家，因此“订单晚到”不能直接等同于“某个卖家有责”
+- `category` 可能缺失，后续桥表会用 `unknown` 兜底
+- 把订单级标签贴到 item 粒度，更适合做筛选与对齐视图，不适合作为完美的 item-level blame assignment
 
-## `analysis.analysis_user_first_order` (User-grain first delivered order)
+### `analysis.analysis_user_first_order`
 
-**Grain**：1 row per `user_id`。
+- `Grain`：1 row per `user_id`
+- `Primary key`：`user_id`
+- `Built from`：[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
+- `Definition source`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)
+- `Used by`：[`analysis.analysis_user_first_order_categories`](../sql/models/30_user/create_user_first_order.sql)、[`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql)
 
-**Primary key**：`user_id`
+关键定义：
 
-**Built from**：`analysis.analysis_orders_obt`
+- 首单定义为用户的首个 delivered 订单
+- 若同一用户有多个订单共享最早 `purchase_ts`，按 `(purchase_ts, order_id)` 做确定性 tie-break
 
-**Definition (Semantics)**：
-- **First delivered order**：由于 `analysis.analysis_orders_obt` 已过滤为 `order_status='delivered'` 且 `delivered_ts` 非空，因此这里的“首单”定义为 **用户的首个已送达订单**。
-- **Deterministic tie-breaker**：按 `(purchase_ts, order_id)` 升序选取第一条，确保同一 `purchase_ts` 下结果可复现。
+关键字段：
 
-**Key columns**：
-- `first_order_id`：首个 delivered 订单的 `order_id`
-- `first_purchase_ts`：首单 `purchase_ts`
+- `first_order_id`：首个 delivered 订单
+- `first_purchase_ts`：首单购买时间
 
----
+### `analysis.analysis_user_first_order_categories`
 
-## `analysis.analysis_user_first_order_categories` (Bridge: first-order categories)
+- `Grain`：1 row per `(user_id, category)`
+- `Primary key`：`(user_id, category)`
+- `Built from`：[`analysis.analysis_user_first_order`](../sql/models/30_user/create_user_first_order.sql)、[`analysis.analysis_items_atomic`](../sql/models/10_atomic/create_items_atomic.sql)
+- `Definition source`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)
+- `Used by`：[`../notebooks/03_seller_hook_analysis.ipynb`](../notebooks/03_seller_hook_analysis.ipynb)、[`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql)
 
-**Grain**：1 row per `(user_id, category)`（同一用户首单篮子里出现过的品类去重后输出）。
+关键定义：
 
-**Primary key**：`(user_id, category)`
+- 只取用户首个 delivered 订单中的商品品类
+- `category` 缺失时记为 `unknown`
+- 同一用户的首单篮子可能映射到多个品类，因此 cohort 会重叠
 
-**Built from**：
-- `analysis.analysis_user_first_order` (user -> first_order_id)
-- `analysis.analysis_items_atomic` (order_id -> category)
+常见口径：
 
-**Definition (Semantics)**：
-- 只取用户首个 delivered 订单（`first_order_id`）中的商品品类。
-- `category` 缺失时记为 `'unknown'`（避免 NULL 导致的口径漂移）。
+- `acquisition_users`：首单包含某品类的用户数
+- `repurchased_users_90d`：在 eligible 用户中，`90d` 内发生复购且首单包含某品类的用户数
 
-**Primary use cases**：
-- 钩子品类分析：
-  - `acquisition_users`：首单包含某品类的用户数
-  - `retained_users`：复购用户中，首单包含某品类的用户数
+### `analysis.analysis_user_metrics`
 
----
+- `Grain`：1 row per `user_id`
+- `Primary key`：`user_id`
+- `Built from`：[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
+- `Definition source`：[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)
+- `Used by`：[`../notebooks/02_repurchase_diagnosis.ipynb`](../notebooks/02_repurchase_diagnosis.ipynb)、[`analysis.analysis_user_rfm`](../sql/analyses/analysis_rfm.sql)
 
-## `analysis.analysis_user_metrics` (User-grain metrics)
+关键字段：
 
-**Grain**：1 row per `user_id`
-
-**Primary key**：`user_id`
-
-**Built from**：`analysis.analysis_orders_obt`
-
-**Key columns**：
 - `first_order_date` / `last_order_date`
 - `frequency`：订单数
-- `monetary`：总 GMV
-- `avg_delay_days`：用户历史订单的平均延迟（允许为负，代表提前送达）
-- `severe_late_rate`：`delivery_status='Late_Severe'` 的比例
-- `primary_state`：用户主州（取最近订单州，避免一个用户多地址导致 fan-out）
-- `monetary_90d` / `monetary_365d`：LTV 窗口（从首单开始滚动）
-- `eligible_repurchase_90d`：是否具备 90 天窗口的观测资格（右删失防御）
-- `repurchase_within_90d`：90 天窗口复购（仅对 eligible 用户有值；否则为 NULL）
+- `monetary`：总 `GMV`
+- `avg_delay_days`：用户历史订单平均延迟
+- `severe_late_rate`：`Late_Severe` 占比
+- `primary_state`：用户主州；取最近订单对应的州，避免直接 JOIN 造成 fan-out
+- `monetary_90d` / `monetary_365d` / `monetary_long`：不同窗口下的价值口径
+- `eligible_repurchase_90d`：是否具备 `90d` 观察资格
+- `repurchase_within_90d`：仅对 eligible 用户定义；不具备资格时为 `NULL`
 
-**Edge cases**：
-- 用户可能跨州下单：直接 JOIN 会导致用户行重复；本项目用 `DISTINCT ON (user_id) ORDER BY purchase_ts DESC` 固化主州
+使用注意：
 
----
+- 所有 `90d` 复购率都应明确基于 `eligible_repurchase_90d=1`
+- `primary_state` 是分析约定，不是用户“唯一真实州信息”
 
-## `analysis.analysis_user_rfm` (RFM + LTV scoring)
+### `analysis.analysis_user_rfm`
 
-**Grain**：1 row per `user_id`
+- `Grain`：1 row per `user_id`
+- `Primary key`：`user_id`
+- `Built from`：[`analysis.analysis_user_metrics`](../sql/analyses/analysis_rfm.sql)
+- `Definition source`：[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)
+- `Used by`：[`../notebooks/02_repurchase_diagnosis.ipynb`](../notebooks/02_repurchase_diagnosis.ipynb)
 
-**Primary key**：`user_id`
+关键字段：
 
-**Built from**：`analysis.analysis_user_metrics`
+- `recency_days`：以数据集最大下单日 `+ 1` 作为分析时点，避免出现 `0` 天歧义
+- `r_score` / `f_score` / `m_score`：RFM 打分
+- `ltv90_score` / `ltv365_score` / `ltvlong_score`：价值分位打分
+- 继承自 `analysis.analysis_user_metrics` 的 `eligible_repurchase_90d`、`repurchase_within_90d` 等字段
 
-**Key columns**：
-- `recency_days`：以数据集最大下单日 + 1 作为分析时点，避免出现 0 天歧义
-- `r_score` / `f_score`：规则分箱
-- `m_score`：`NTILE(5)`（按 monetary 分位数打分）
-- `ltv90_score` / `ltv365_score` / `ltvlong_score`：LTV 分位数打分
-- 继承自 `analysis.analysis_user_metrics`：`eligible_repurchase_90d` / `repurchase_within_90d` 等窗口复购字段
+使用注意：
 
-**Edge cases**：
-- R 的计算避免 `INTERVAL -> INT` 强转陷阱：用 `DATE - DATE` 得到稳定的整数天数
+- `recency_days` 通过 `DATE - DATE` 计算，避免 `INTERVAL -> INT` 的不稳定强转
 
----
+## DQ Gates
 
-## Where definitions live | 口径来源
+### `check_obt.sql`
 
-- OBT 建表：`sql/models/20_obt/create_obt.sql`
-- atomic 建表：`sql/models/10_atomic/create_items_atomic.sql`
-- 用户首单/首单品类桥表：`sql/models/30_user/create_user_first_order.sql`
-- RFM/LTV：`sql/analyses/analysis_rfm.sql`
-- OBT 质量门禁：`sql/dq/check_obt.sql`
-- 首单表质量门禁（可选）：`sql/dq/check_user_first_order.sql`
+脚本：[`../sql/dq/check_obt.sql`](../sql/dq/check_obt.sql)
+
+主要检查：
+
+- `OBT` 行数是否与 raw delivered orders 对齐
+- `gmv` 是否与 raw payments 汇总一致
+- `order_id` 是否唯一
+- `user_id`、`delay_days` 是否存在大量缺失
+- `has_review` 与 `review_score` 的逻辑是否一致
+- `review_score` 是否落在 `1..5`
+- `delay_days` 与 `delivery_status` 是否自洽
+
+### `check_user_first_order.sql`
+
+脚本：[`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql)
+
+主要检查：
+
+- 首单表是否做到 1 user 1 row
+- 首单品类桥表是否做到 `(user_id, category)` 唯一
+- 首单是否确实对应最早 `purchase_ts`
+- tie-break 是否稳定落在预期 `order_id`
+- 首单桥表是否存在 orphan users
+
+补充说明：`analysis.analysis_user_metrics` / `analysis.analysis_user_rfm` 当前没有单独的 DQ 脚本；若未来扩展仓库，建议在 `90d` 复购和 LTV 口径上补一层更显式的验证脚本。
+
+## Related Assets
+
+| 主题 | 相关资产 |
+|---|---|
+| 仓库入口 | [`../README.md`](../README.md) |
+| 执行路径 | [`runbook.md`](runbook.md) |
+| 履约断崖 | [`../notebooks/01_obt_feature_analysis.ipynb`](../notebooks/01_obt_feature_analysis.ipynb), [`../outputs/figures/fig_01_odds_ratio.png`](../outputs/figures/fig_01_odds_ratio.png) |
+| 低复购现实 | [`../notebooks/02_repurchase_diagnosis.ipynb`](../notebooks/02_repurchase_diagnosis.ipynb), [`../outputs/figures/fig_02_ltv90_vs_ltvlong.png`](../outputs/figures/fig_02_ltv90_vs_ltvlong.png) |
+| 钩子品类与卖家治理 | [`../notebooks/03_seller_hook_analysis.ipynb`](../notebooks/03_seller_hook_analysis.ipynb), [`../outputs/figures/fig_03_hook_category_matrix.png`](../outputs/figures/fig_03_hook_category_matrix.png), [`../outputs/figures/fig_03_seller_governance_matrix.png`](../outputs/figures/fig_03_seller_governance_matrix.png) |
+| schema / path 约定 | [`../configs/config.yml`](../configs/config.yml) |

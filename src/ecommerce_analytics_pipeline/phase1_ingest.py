@@ -1,7 +1,7 @@
 """CSV -> Postgres ingestion for the Olist dataset.
 
 Environment variables:
-- Preferred: DATABASE_URL
+- Optional convenience: DATABASE_URL
 - Or: DB_USER, DB_PASS, DB_HOST (default localhost), DB_PORT (default 5432), DB_NAME
 
 Optional:
@@ -103,27 +103,24 @@ def load_csv_to_pg(
     schema: str = "olist",
     if_exists: str = "replace",
 ) -> None:
-    try:
-        ensure_schema_exists(schema)
+    ensure_schema_exists(schema)
 
-        engine = get_engine()
+    engine = get_engine()
 
-        # 关键：很多 ID 列必须按字符串读
-        df = pd.read_csv(csv_path, dtype=str)
-        
-        # 分块写入，避免内存溢出
-        df.to_sql(
-            table_name,
-            engine,
-            schema=schema,
-            if_exists=if_exists,
-            index=False,
-            chunksize=20000,
-            method="multi",
-        )
-        print(f"Successfully loaded: {table_name}")
-    except Exception as e:
-        print(f"Failed to load {table_name}: {e}")
+    # 关键：很多 ID 列必须按字符串读
+    df = pd.read_csv(csv_path, dtype=str)
+
+    # 分块写入，避免内存溢出
+    df.to_sql(
+        table_name,
+        engine,
+        schema=schema,
+        if_exists=if_exists,
+        index=False,
+        chunksize=20000,
+        method="multi",
+    )
+    print(f"Successfully loaded: {table_name}")
 
 
 def iter_core_files() -> Iterable[str]:
@@ -140,18 +137,24 @@ def iter_core_files() -> Iterable[str]:
 
 
 def main() -> int:
-    # Fail fast if DB credentials are missing.
+    # Fail fast if DB credentials or core CSV files are missing.
     get_engine()
 
     raw_schema = os.getenv("RAW_SCHEMA", "olist")
+    core_files = list(iter_core_files())
+    missing_files = [
+        os.path.join(DATA_DIR, filename)
+        for filename in core_files
+        if not os.path.exists(os.path.join(DATA_DIR, filename))
+    ]
 
-    for filename in iter_core_files():
+    if missing_files:
+        missing_display = ", ".join(missing_files)
+        raise FileNotFoundError(f"Missing required CSV files: {missing_display}")
+
+    for filename in core_files:
         csv_path = os.path.join(DATA_DIR, filename)
         table_name = os.path.splitext(filename)[0]
-
-        if not os.path.exists(csv_path):
-            print(f"Missing CSV, skip: {csv_path}")
-            continue
 
         load_csv_to_pg(csv_path, table_name, schema=raw_schema, if_exists="replace")
 
