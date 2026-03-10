@@ -36,6 +36,12 @@ except Exception:  # pragma: no cover
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+# Guardrails: SQL assets in this repo are schema-qualified (raw `Olist.*` and
+# analytics `analysis.*`). We treat schemas as fixed conventions to prevent
+# silent drift between ingestion, SQL, and notebooks.
+_EXPECTED_RAW_SCHEMA = "olist"
+_EXPECTED_ANALYTICS_SCHEMA = "analysis"
+
 
 def _validate_identifier(value: str, *, label: str) -> str:
     """Validate SQL identifier-like strings (schema names).
@@ -163,12 +169,35 @@ def bootstrap(*, project_root: Path | None = None) -> NotebookContext:
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     raw_schema = _validate_identifier(
-        str(warehouse_cfg.get("raw_schema", "olist")), label="raw_schema"
+        str(warehouse_cfg.get("raw_schema", _EXPECTED_RAW_SCHEMA)), label="raw_schema"
     )
     analytics_schema = _validate_identifier(
-        str(warehouse_cfg.get("analytics_schema", "analysis")),
+        str(warehouse_cfg.get("analytics_schema", _EXPECTED_ANALYTICS_SCHEMA)),
         label="analytics_schema",
     )
+
+    if raw_schema != _EXPECTED_RAW_SCHEMA:
+        raise ValueError(
+            "Unsupported raw_schema: "
+            + repr(raw_schema)
+            + ". Keep configs/config.yml warehouse.raw_schema='olist' unless you also "
+            + "update the SQL assets that reference Olist.*."
+        )
+
+    if analytics_schema != _EXPECTED_ANALYTICS_SCHEMA:
+        raise ValueError(
+            "Unsupported analytics_schema: "
+            + repr(analytics_schema)
+            + ". Keep configs/config.yml warehouse.analytics_schema='analysis' unless "
+            + "you also update the SQL assets that write/read analysis.*."
+        )
+
+    raw_schema_env = os.getenv("RAW_SCHEMA")
+    if raw_schema_env and raw_schema_env != _EXPECTED_RAW_SCHEMA:
+        raise ValueError(
+            "RAW_SCHEMA env var must be 'olist' for this repo (or unset). Found: "
+            + repr(raw_schema_env)
+        )
 
     engine = _build_engine_from_env()
 

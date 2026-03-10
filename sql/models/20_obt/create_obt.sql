@@ -3,11 +3,9 @@
  * @description: 将已有事实表中的信息进行聚合、连接,创建以订单为粒度的详细信息宽表
  */
 
--- 表初始化,保证幂等性
+-- 表初始化: 保证脚本可重复运行 (不清空整个 schema)
+CREATE SCHEMA IF NOT EXISTS analysis;
 DROP TABLE IF EXISTS analysis.analysis_orders_obt;
-DROP SCHEMA IF EXISTS analysis;
-
-CREATE SCHEMA analysis;
 CREATE TABLE analysis.analysis_orders_obt AS
 WITH
 
@@ -169,4 +167,4 @@ LEFT JOIN order_reviews r ON b.order_id = r.order_id;
 CREATE INDEX IF NOT EXISTS idx_aoobt_user_id ON analysis.analysis_orders_obt(user_id);
 CREATE INDEX IF NOT EXISTS idx_aoobt_purchase_ts ON analysis.analysis_orders_obt(purchase_ts);
 CREATE INDEX IF NOT EXISTS idx_aoobt_delivery_status ON analysis.analysis_orders_obt(delivery_status);
-CREATE INDEX IF NOT EXISTS idx_aoobt_month ON analysis.analysis_orders_obt(purchase_month)
+CREATE INDEX IF NOT EXISTS idx_aoobt_month ON analysis.analysis_orders_obt(purchase_month);

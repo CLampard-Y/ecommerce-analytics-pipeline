@@ -12,5 +12,5 @@ paths:
   figures_dir: "outputs/figures/"
 
 warehouse:
-  raw_schema: "olist"        # matches SQL references like olist.olist_orders_dataset
-  analytics_schema: "analysis"
+  raw_schema: "olist"        # fixed convention; SQL uses unquoted Olist.* (folds to olist in Postgres)
+  analytics_schema: "analysis" # fixed convention; SQL assets write/read analysis.*

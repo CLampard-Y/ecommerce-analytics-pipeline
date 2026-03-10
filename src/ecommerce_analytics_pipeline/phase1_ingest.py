@@ -7,6 +7,11 @@ Environment variables:
 Optional:
 - DATA_DIR (default ./data)
 - RAW_SCHEMA (default olist; aligns with sql/ models)
+
+NOTE:
+- This repo's downstream SQL assets are schema-qualified (raw `Olist.*` and
+  analytics `analysis.*`). To prevent silent metric drift, we treat schemas as
+  fixed conventions: keep RAW_SCHEMA='olist'.
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ if load_dotenv is not None:
 
 
 _ENGINE = None
+
+
+_EXPECTED_RAW_SCHEMA = "olist"
 
 
 def get_engine():
@@ -140,7 +148,16 @@ def main() -> int:
     # Fail fast if DB credentials or core CSV files are missing.
     get_engine()
 
-    raw_schema = os.getenv("RAW_SCHEMA", "olist")
+    raw_schema = os.getenv("RAW_SCHEMA", _EXPECTED_RAW_SCHEMA)
+    raw_schema = _validate_identifier(raw_schema, label="RAW_SCHEMA")
+    if raw_schema != _EXPECTED_RAW_SCHEMA:
+        raise ValueError(
+            "Unsupported RAW_SCHEMA: "
+            + repr(raw_schema)
+            + ". This repo assumes RAW_SCHEMA='olist' because downstream SQL assets "
+            + "are schema-qualified (Olist.* -> olist). If you really need a different "
+            + "raw schema, update the SQL assets and configs/config.yml together."
+        )
     core_files = list(iter_core_files())
     missing_files = [
         os.path.join(DATA_DIR, filename)

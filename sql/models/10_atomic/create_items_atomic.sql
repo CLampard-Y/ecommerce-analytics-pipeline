@@ -2,7 +2,12 @@
  * @title:Items Atomic Creation(商品信息原子表的创建)
  * @description:从olist_order_items_dataset(记录了订单里每个商品的信息)表出发
  *              连接analysis_orders_obt(记录了订单的发货时间),olist_products_dataset(记录商品葡语名),Olist.product_category_name_translation(记录商品英语名)表
- *              最终得到商品信息原子表(即以商品为粒度的信息表)
+ *              最终得到订单明细(item line)粒度的商品信息原子表。
+ *
+ *              Grain: 1 row per (order_id, order_item_id)
+ *              Expected unique key: (order_id, order_item_id)
+ *
+ *              注意：这不是 product-grain；同一个 product_id 会在不同订单中重复出现。
  */
 DROP TABLE IF EXISTS analysis.analysis_items_atomic;
 

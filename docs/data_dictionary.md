@@ -67,7 +67,7 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 ### `analysis.analysis_orders_obt`
 
 - `Grain`：1 row per `order_id`，只保留 delivered 且有送达时间的订单
-- `Primary key`：`order_id`
+- `Expected unique key`（由 DQ 门禁保证）：`order_id`
 - `Built from`：[`olist_orders_dataset.csv`](../data/olist_orders_dataset.csv)、[`olist_customers_dataset.csv`](../data/olist_customers_dataset.csv)、[`olist_order_items_dataset.csv`](../data/olist_order_items_dataset.csv)、[`olist_order_payments_dataset.csv`](../data/olist_order_payments_dataset.csv)、[`olist_order_reviews_dataset.csv`](../data/olist_order_reviews_dataset.csv)
 - `Definition source`：[`../sql/models/20_obt/create_obt.sql`](../sql/models/20_obt/create_obt.sql)
 - `Used by`：[`../notebooks/01_obt_feature_analysis.ipynb`](../notebooks/01_obt_feature_analysis.ipynb)、[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)、[`../sql/models/10_atomic/create_items_atomic.sql`](../sql/models/10_atomic/create_items_atomic.sql)
@@ -100,7 +100,7 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 ### `analysis.analysis_items_atomic`
 
 - `Grain`：1 row per `(order_id, order_item_id)`
-- `Primary key`：`(order_id, order_item_id)`
+- `Expected unique key`（由 DQ 门禁保证）：`(order_id, order_item_id)`
 - `Built from`：[`olist_order_items_dataset.csv`](../data/olist_order_items_dataset.csv)、[`olist_products_dataset.csv`](../data/olist_products_dataset.csv)、[`product_category_name_translation.csv`](../data/product_category_name_translation.csv)、[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
 - `Definition source`：[`../sql/models/10_atomic/create_items_atomic.sql`](../sql/models/10_atomic/create_items_atomic.sql)
 - `Used by`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)、[`../notebooks/03_seller_hook_analysis.ipynb`](../notebooks/03_seller_hook_analysis.ipynb)
@@ -122,7 +122,7 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 ### `analysis.analysis_user_first_order`
 
 - `Grain`：1 row per `user_id`
-- `Primary key`：`user_id`
+- `Expected unique key`（由 DQ 门禁保证）：`user_id`
 - `Built from`：[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
 - `Definition source`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)
 - `Used by`：[`analysis.analysis_user_first_order_categories`](../sql/models/30_user/create_user_first_order.sql)、[`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql)
@@ -140,7 +140,7 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 ### `analysis.analysis_user_first_order_categories`
 
 - `Grain`：1 row per `(user_id, category)`
-- `Primary key`：`(user_id, category)`
+- `Expected unique key`（由 DQ 门禁保证）：`(user_id, category)`
 - `Built from`：[`analysis.analysis_user_first_order`](../sql/models/30_user/create_user_first_order.sql)、[`analysis.analysis_items_atomic`](../sql/models/10_atomic/create_items_atomic.sql)
 - `Definition source`：[`../sql/models/30_user/create_user_first_order.sql`](../sql/models/30_user/create_user_first_order.sql)
 - `Used by`：[`../notebooks/03_seller_hook_analysis.ipynb`](../notebooks/03_seller_hook_analysis.ipynb)、[`../sql/dq/check_user_first_order.sql`](../sql/dq/check_user_first_order.sql)
@@ -153,13 +153,14 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 
 常见口径：
 
-- `acquisition_users`：首单包含某品类的用户数
+- `acquisition_users`：在 eligible 用户中，首单包含某品类的用户数
 - `repurchased_users_90d`：在 eligible 用户中，`90d` 内发生复购且首单包含某品类的用户数
+- `repurchase_rate_90d`：`repurchased_users_90d / acquisition_users`（eligible 用户分母）
 
 ### `analysis.analysis_user_metrics`
 
 - `Grain`：1 row per `user_id`
-- `Primary key`：`user_id`
+- `Expected unique key`（由 DQ 门禁保证）：`user_id`
 - `Built from`：[`analysis.analysis_orders_obt`](../sql/models/20_obt/create_obt.sql)
 - `Definition source`：[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)
 - `Used by`：[`../notebooks/02_repurchase_diagnosis.ipynb`](../notebooks/02_repurchase_diagnosis.ipynb)、[`analysis.analysis_user_rfm`](../sql/analyses/analysis_rfm.sql)
@@ -184,7 +185,7 @@ Quick navigation: [How to Read](#how-to-read) · [Metric Trust Map](#metric-trus
 ### `analysis.analysis_user_rfm`
 
 - `Grain`：1 row per `user_id`
-- `Primary key`：`user_id`
+- `Expected unique key`（由 DQ 门禁保证）：`user_id`
 - `Built from`：[`analysis.analysis_user_metrics`](../sql/analyses/analysis_rfm.sql)
 - `Definition source`：[`../sql/analyses/analysis_rfm.sql`](../sql/analyses/analysis_rfm.sql)
 - `Used by`：[`../notebooks/02_repurchase_diagnosis.ipynb`](../notebooks/02_repurchase_diagnosis.ipynb)
