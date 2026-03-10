@@ -1,288 +1,117 @@
 # Olist E-commerce Analytics Pipeline
 
-> DA case study: **Fulfillment experience -> Reviews -> Retention/Repurchase** (Olist dataset, Postgres as an analytics warehouse).
+> 以 Olist 电商数据为例，先建立 `metric trust`，再定位 `fulfillment cliff`，最后在低复购约束下拆解 `hook category` 与 `seller governance` 两条动作分支。
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13%2B-blue)](https://www.postgresql.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-warehouse-blue)](https://www.postgresql.org/)
 
----
+Quick navigation: [Start Here](#start-here) · [Key Results](#key-results) · [Decision Snapshot](#decision-snapshot) · [Documentation Map](#documentation-map) · [Quickstart](#quickstart) · [Limitations](#limitations)
 
-## Executive Summary
+## Overview
 
-**Business Problem:** Decision-makers need defensible answers to:
-- "(客户) 体验下降悬崖"在哪里? (which orders to rescue)?
-- 在低复购率的情况下如何寻找增长点? (which categories to invest)?
-- 卖家如何进行进一步优化治理? (which sellers to govern)?
+本仓库围绕一条可复现的批处理分析链路展开：本地 `CSV` -> `Postgres` -> `SQL models` -> `DQ gates` -> `notebooks`。重点不是把所有现象都简化成“物流慢”，而是先把指标口径、粒度和分母控制住，再解释结果。
 
-业务侧常把“差评/投诉/退款/低复购”简化为“物流慢”。如果没有一条稳定的指标链路（raw -> warehouse -> analysis），这些问题很容易被错误 JOIN、口径漂移与脏数据放大成“漂亮但错的结论”。
+当前仓库更适合按以下顺序理解：
 
-**Solution:** 用工程化 ELT 固化口径，把“体验 -> 增长/治理”拆成三条可落地的分析主线：
-- **Fulfillment -> Review:** 用订单级 OBT 把履约拆解为可解释的时间段，并识别非线性断崖
-- **Hook Category -> Retention:** 在低复购约束下，用“首单品类 -> 后续复购”衡量获客质量与入口品类
-- **Seller SLA -> Risk/ROI:** 把“晚到”从卖家与物流中解耦，定位责任方，并估算治理的风险敞口与回报
+- `Metric trust`：先拆开 order / item / user 三层粒度，用 [`sql/dq/check_obt.sql`](sql/dq/check_obt.sql) 和 [`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql) 守住行数、金额、唯一性和首单桥表口径。
+- `Fulfillment cliff`：在 delivered-order 范围内，最稳定的体验损伤信号不是“越早越好”，而是延迟从 `Late_Small` 跨到 `Late_Severe` 时评分明显恶化。
+- `Low-repurchase reality`：`90d` 复购必须基于 `eligible_repurchase_90d` 解释；仓库证据支持的是低复购现实，而不是高频复购平台假设。
+- `Action branches`：在这个约束下，把首单品类用于获客入口筛选，把卖家分群用于治理队列优先级；二者都是 prioritization 工具，不是直接的因果归因。
 
-**Impact Framing (Interview-ready):**
-- **Nonlinearity cliff:** 重点防止订单跨过 `Late_Small -> Late_Severe` 的断崖（断崖附近的体验 ROI 往往是“凸”的）
-- **Metric decoupling:** 在追责前先拆分“卖家导致的延迟”和“物流导致的延迟”，避免治理对象错配
-- **Exposure/ROI sensitivity:** 用风险敞口 + 情景敏感性（breach reduction x margin - cost）做治理决策，而不是拍脑袋承诺固定 uplift
+执行故事、详细定义与复现路径已分别拆分到 [`docs/execution_report.md`](docs/execution_report.md)、[`docs/data_dictionary.md`](docs/data_dictionary.md) 与 [`docs/runbook.md`](docs/runbook.md)，避免主 README 同时承担入口、执行归档、执行手册和指标字典四种角色。
 
-**Key Findings (Reproducible):**
-- Experience: "延迟交付时间 vs 评分" 是负相关的非线性关系  (`Pearson=-0.2609`, `Spearman=-0.3157`)
-- Ops: 延迟交付时间中"评分悬崖"的存在 
-(`Late_Small median=4.0` -> `Late_Severe median=1.0`)
-- Growth: 低复购率的存在; 用户的 90 天 LTV 和长期 LTV 极其接近
-- Acquisition: 通过探索 "first-order category -> 90d repurchase" 这个链路, 发现了购买之后复购率高于基线的品类-- "钩子品类" (详细见 notebooks/03_seller_hook_analysis.ipynb)
-- Supply: 通过`shipping_limit_date`（SLA）+ 公平性校准对违约卖家进行分析；存在风险的商品交易额（GMV）敞口达到 `263,811.44`，平均违约率`29.6%`
+## Start Here
 
----
+- `30 sec`: 先看 [Key Results](#key-results) 和 [Decision Snapshot](#decision-snapshot)，快速把握仓库主线。
+- `2 min`: 阅读 [`docs/execution_report.md`](docs/execution_report.md)，先理解这条主线是如何从原始推进思路收敛成当前仓库叙事的。
+- `5 min`: 阅读 [`docs/data_dictionary.md`](docs/data_dictionary.md)、[`sql/dq/check_obt.sql`](sql/dq/check_obt.sql)、[`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql)、[`sql/analyses/analysis_rfm.sql`](sql/analyses/analysis_rfm.sql)，再确认粒度、分母和 `90d` 窗口口径。
+- `10 min`: 按顺序看 [`notebooks/01_obt_feature_analysis.ipynb`](notebooks/01_obt_feature_analysis.ipynb)、[`notebooks/02_repurchase_diagnosis.ipynb`](notebooks/02_repurchase_diagnosis.ipynb)、[`notebooks/03_seller_hook_analysis.ipynb`](notebooks/03_seller_hook_analysis.ipynb)，并结合 [`outputs/figures/fig_01_odds_ratio.png`](outputs/figures/fig_01_odds_ratio.png)、[`outputs/figures/fig_02_ltv90_vs_ltvlong.png`](outputs/figures/fig_02_ltv90_vs_ltvlong.png)、[`outputs/figures/fig_03_hook_category_matrix.png`](outputs/figures/fig_03_hook_category_matrix.png)、[`outputs/figures/fig_03_seller_governance_matrix.png`](outputs/figures/fig_03_seller_governance_matrix.png)、[`outputs/figures/fig_03_roi_sensitivity_heatmap.png`](outputs/figures/fig_03_roi_sensitivity_heatmap.png)。
+- `Reproduce locally`: 从 [`docs/runbook.md`](docs/runbook.md) 开始，再配合 [`.env.example`](.env.example)、[`requirements.txt`](requirements.txt) 和 [`setup.py`](setup.py) 配置本地环境。
 
-## Project Overview
+## Key Results
 
-**Dataset:** Kaggle 的 Olist Brazilian E-commerce Public Dataset。
+下表只保留仓库中可直接核验的核心结果，详细定义见 [`docs/data_dictionary.md`](docs/data_dictionary.md)，执行路径见 [`docs/runbook.md`](docs/runbook.md)。这些数字按当前仓库已提交的 notebook 输出与图表快照整理，若未来重跑 notebook，应以最新产物为准。
 
-**Goal:** 输出“业务侧可辩护的结论”，而不是“堆技术名词”。通过工程化 ELT 固化口径，确保每一句业务结论都能追溯到：
-- 哪张表、什么粒度（grain）、用什么主键（PK）
-- 为什么不会被 fan-out 复制放大（尤其是 GMV）
-- 哪些 DQ gate 约束会先行卡住（fail-fast）
+| 模块 | 已核验结果 | 证据 |
+|---|---|---|
+| 指标可信性 | [`sql/dq/check_obt.sql`](sql/dq/check_obt.sql) 守住 `obt_rows == raw_rows`、GMV 一致性、重复订单、评价域和延迟/状态一致性；[`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql) 守住用户首单映射与首单品类桥表口径 | [`sql/dq/check_obt.sql`](sql/dq/check_obt.sql), [`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql) |
+| 履约断崖 | 评价覆盖率 `99.33%`；`delay_days_clipped` 与评分负相关（`Pearson=-0.2719`，`Spearman=-0.2999`）；`Late_Small` 到 `Late_Severe` 的评分中位数从 `4.0` 降到 `1.0` | [`notebooks/01_obt_feature_analysis.ipynb`](notebooks/01_obt_feature_analysis.ipynb) |
+| 差评风险基线 | 在标准化数值特征上，`delay_days` 是差评模型里最强的解释变量之一（`OR=2.2048`）；当前 `ROC-AUC=0.6987` 仅表示仓库内的 in-sample 描述性基线 | [`notebooks/01_obt_feature_analysis.ipynb`](notebooks/01_obt_feature_analysis.ipynb), [`outputs/figures/fig_01_odds_ratio.png`](outputs/figures/fig_01_odds_ratio.png), [`outputs/figures/fig_01_roc_curve.png`](outputs/figures/fig_01_roc_curve.png) |
+| 低复购现实 | 在 `eligible_repurchase_90d=1` 的用户分母上，`90d` 复购率为 `1.30%`；`monetary_90d` 与 `monetary_long` 均值接近（`163.53` vs `165.20`） | [`sql/analyses/analysis_rfm.sql`](sql/analyses/analysis_rfm.sql), [`notebooks/02_repurchase_diagnosis.ipynb`](notebooks/02_repurchase_diagnosis.ipynb), [`outputs/figures/fig_02_ltv90_vs_ltvlong.png`](outputs/figures/fig_02_ltv90_vs_ltvlong.png) |
+| 钩子品类 | 相对 `1.30%` 大盘基线，`fashion_bags_accessories=2.50% (36/1442)`、`bed_bath_table=2.00% (144/7183)`、`sports_leisure=1.65% (100/6070)` 更像首单入口筛选候选，而不是品类因果 lift | [`sql/models/30_user/create_user_first_order.sql`](sql/models/30_user/create_user_first_order.sql), [`notebooks/03_seller_hook_analysis.ipynb`](notebooks/03_seller_hook_analysis.ipynb), [`outputs/figures/fig_03_hook_category_matrix.png`](outputs/figures/fig_03_hook_category_matrix.png) |
+| 卖家治理 | 在 notebook 当前规则下（`order_volume > 30`、`performance_gap > 5pp`、按卖家 item `price` 汇总中位数分层），`58/611` 活跃卖家 (`9.5%`) 落入 `Bad`；其 breach-concentration proxy 约 `15.4%`，item-price exposure proxy 为 `263,811.44`，平均 breach rate 为 `29.6%` | [`notebooks/03_seller_hook_analysis.ipynb`](notebooks/03_seller_hook_analysis.ipynb), [`outputs/figures/fig_03_seller_governance_matrix.png`](outputs/figures/fig_03_seller_governance_matrix.png), [`outputs/figures/fig_03_roi_sensitivity_heatmap.png`](outputs/figures/fig_03_roi_sensitivity_heatmap.png) |
 
-**Interview Checklist (Buzzwords With Receipts):**
-- `DQ gate`：`sql/dq/check_obt.sql` 做行数/金额一致性与 anti-fan-out 约束；`sql/dq/check_user_first_order.sql` 验证 user-grain 衍生模型
-- `Grain`：order-level OBT (`order_id`), item-level atomic (`order_id, order_item_id`), user-category bridge（首单品类桥表，避免分母错误）
-- `Right-censoring`：复购用 90d eligible window 口径，避免样本尾部低估
-- `Nonlinearity cliff`：迟到分桶的评分断崖驱动运营优先级
-- `Metric decoupling`：用 `shipping_limit_date` vs `carrier_date` 做卖家 vs 物流归因
-- `Fairness calibration`：州内基准校准卖家表现（`performance_gap`）
-- `Exposure/ROI sensitivity`：治理用“风险敞口 x 违约率改进 x 成本”做敏感性分析
+## Decision Snapshot
 
-**Notes:** 项目推进依据包括：ELT 取舍、入库策略、OBT 验收、履约归因、RFM/LTV 与供给侧诊断思路。
+- `Metric trust`：先过 [`sql/dq/check_obt.sql`](sql/dq/check_obt.sql) 和 [`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql)，再解释图表；否则很容易把 fan-out、缺失值和分母漂移误当成业务信号。
+- `Fulfillment cliff`：当前更值得监控的是 `Late_Small -> Late_Severe` 的恶化边界，而不是把“更提前送达”直接当作单一 KPI。
+- `Low-repurchase reality`：[`sql/analyses/analysis_rfm.sql`](sql/analyses/analysis_rfm.sql) 用 `eligible_repurchase_90d` 守住右删失边界，说明这个样本更像低复购平台，后续动作应回到入口质量和供给稳定性。
+- `Action branches`：首单品类分支用于筛选更值得继续实验的获客入口；卖家治理分支用 seller-side SLA proxy、州内基准和情景敏感性分析收缩治理队列，二者都不直接承诺固定 uplift。
 
----
+## Documentation Map
 
-## Table of Contents
+| 如果你想看 | 去哪里 | 为什么从这里开始 |
+|---|---|---|
+| 仓库主线和核心结果 | [`README.md`](README.md) | 先把问题定义、证据层级和边界看清楚 |
+| 执行故事与方法取舍 | [`docs/execution_report.md`](docs/execution_report.md) | 这里把旧推进思路提炼成当前仓库真正保留的 execution story |
+| 指标定义、粒度和分母 | [`docs/data_dictionary.md`](docs/data_dictionary.md) | 这里是表结构、字段口径和解释边界的定义源 |
+| DQ 门禁与 `90d` 口径 | [`sql/dq/check_obt.sql`](sql/dq/check_obt.sql), [`sql/dq/check_user_first_order.sql`](sql/dq/check_user_first_order.sql), [`sql/analyses/analysis_rfm.sql`](sql/analyses/analysis_rfm.sql) | 在进 notebook 之前，先确认 grain、分母和 right-censoring 定义 |
+| notebook 结果 | [`notebooks/01_obt_feature_analysis.ipynb`](notebooks/01_obt_feature_analysis.ipynb), [`notebooks/02_repurchase_diagnosis.ipynb`](notebooks/02_repurchase_diagnosis.ipynb), [`notebooks/03_seller_hook_analysis.ipynb`](notebooks/03_seller_hook_analysis.ipynb) | 分别对应履约断崖、低复购现实和两条动作分支 |
+| 执行路径与命令 | [`docs/runbook.md`](docs/runbook.md) | 最后回到这里做完整复现，按阶段执行导入、建模、DQ 和 notebook |
+| OBT 建表逻辑 | [`sql/models/20_obt/create_obt.sql`](sql/models/20_obt/create_obt.sql) | 订单粒度体验主干与 delivered-only 范围都在这里定义 |
+| 首单桥表与钩子品类口径 | [`sql/models/30_user/create_user_first_order.sql`](sql/models/30_user/create_user_first_order.sql) | 明确“首单”是首个 delivered 订单，以及品类桥表如何去重 |
 
-- [Repo Structure](#repo-structure)
-- [Stakeholder-ready Summary](#stakeholder-ready-summary)
-- [Business Questions Answered](#business-questions-answered)
-- [Architecture (Phases)](#architecture-phases)
-- [Reproducibility (Optional)](#reproducibility-optional)
-- [Warehouse Models](#warehouse-models)
-- [Data Quality Gate (DoD)](#data-quality-gate-dod)
-- [Analytics Notebooks](#analytics-notebooks)
-- [Important Gotchas](#important-gotchas)
+## Repository Guide
 
----
-
-## Repo Structure
-
-```
-configs/     # centralized config (non-secret)
-data/        # local CSVs (gitignored by default)
-docs/        # runbook + data dictionary + project notes
-notebooks/   # analysis notebooks (mainly analysis.*; 03 also reads raw Olist.* for seller SLA inputs)
-outputs/     # generated artifacts (gitignored)
-sql/         # warehouse models + analyses + dq gates
-src/         # installable python package
-tests/       # lightweight smoke tests
+```text
+configs/   配置与 schema 约定（见 configs/config.yml）
+data/      本地 CSV 工作目录；当前仓库可能保留了快照文件便于浏览
+docs/      README 之外的执行说明与指标字典
+notebooks/ 三个分析 notebook，03 额外读取 raw Olist.* 表
+outputs/   notebook 导出的图表快照
+sql/       建模 SQL、分析 SQL 与 DQ 门禁
+src/       可安装的 Python 包与 ingestion 入口
+tests/     轻量 smoke tests
 ```
 
----
+## Quickstart
 
-## Architecture (Phases)
+在仓库根目录执行：
 
-### Phase 0: Data Download & Validation
+### 1) Install dependencies
 
-**Engineering Notes:**
-- **ELT trade-off:** 先全量入库 raw，再用 SQL 清洗/建模，迭代更快、可溯源
-- **Integrity check:** 推荐为 CSV 生成 `SHA256` 清单（用于二次下载/迁移比对）
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
 
-### Phase 1: Ingestion Baseline (CSV -> Postgres raw)
+说明：`pip install -e .` 用于让 [`src/ecommerce_analytics_pipeline/ingest.py`](src/ecommerce_analytics_pipeline/ingest.py) 这类模块入口可直接通过 `python -m ecommerce_analytics_pipeline.ingest` 调用；如果你只打算使用兼容入口 `python src/ingest/load_data.py`，则可以不安装 editable package。
 
-**Entrypoints:**
-- **Canonical:** `src/ecommerce_analytics_pipeline/phase1_ingest.py`
-- **Stable wrapper:** `src/ecommerce_analytics_pipeline/ingest.py`（保持 `python -m` 入口稳定）
+### 2) Configure environment
 
-**Engineering Guards:**
-- `pd.read_csv(..., dtype=str)`：防止 ID/邮编等字段 **前导零丢失**
-- `to_sql(..., chunksize=20000, method="multi")`：分块写入 + 批量插入，提升稳定性与速度
-- `ensure_schema_exists()`：schema 幂等创建，避免“第一次运行就爆炸”
+- 复制 [`.env.example`](.env.example) 到本地 `.env`
+- 本项目的 Python 执行链路并不强依赖 `DATABASE_URL`；它只是一个为了降低本地配置摩擦的可选统一入口
+- 如果不用 `DATABASE_URL`，也可以设置 `DB_USER`、`DB_PASS`、`DB_HOST`、`DB_PORT`、`DB_NAME`
+- 详细字段说明见 [`docs/runbook.md`](docs/runbook.md)
 
-**DoD:**
-- raw schema（默认 `olist`）存在，并能看到 `olist.olist_*` 原始表
+### 3) Follow the runbook
 
-### Phase 2: Warehouse Modeling (Atomic -> OBT) + DQ Gate
+- 执行数据导入、SQL 建模、DQ 检查与 notebook 复现，请直接按 [`docs/runbook.md`](docs/runbook.md) 的阶段顺序操作
+- Phase 1 的 raw baseline 以 8 个 core CSV 为完整输入；当前 ingestion 已改为 fail-fast，缺任意一个文件都会直接退出，不再允许 silent partial load
+- 如果只想做无数据库 smoke check，可先运行 `python -m compileall src` 和 `python -m unittest discover -s tests`（`tests/` 是轻量 contract tests：校验关键资产存在、ingestion fail-fast、schema guardrails）
 
-**SQL Assets:**
-- Order-grain OBT: `sql/models/20_obt/create_obt.sql`
-- Item-grain atomic: `sql/models/10_atomic/create_items_atomic.sql`
-- User-grain models (first-order + bridge): `sql/models/30_user/create_user_first_order.sql`
-- RFM/LTV：`sql/analyses/analysis_rfm.sql`
-- DQ gates：`sql/dq/check_obt.sql` + `sql/dq/check_user_first_order.sql`
+## Limitations
 
-**DoD (Quality Gate):**
-- `obt_rows == raw_rows`
-- `duplicate_orders == 0`（防 fan-out）
-- `null_users`、`null_delays` 约为 0
-
-### Phase 3: Analytics Delivery (Notebooks)
-
-**Notebooks:** 主要依赖 `analysis.*`；其中 03 的卖家 SLA 治理会额外读取 raw `Olist.*` 的 `shipping_limit_date` / `seller_state` 作为输入。
-- `notebooks/01_obt_feature_analysis.ipynb`：履约延迟 vs 评分（相关 + Logit 归因）
-- `notebooks/02_repurchase_diagnosis.ipynb`：复购率（含 90d 窗口右删失）、LTV90 vs 长期 LTV、T-Test（含分层防御）
-- `notebooks/03_seller_hook_analysis.ipynb`：钩子品类（首单 -> 复购）与供给侧诊断入口 + 供给侧治理/ROI
-
----
-
-## Stakeholder-ready Summary
-
-Fast takeaways: what to fix, what to do, and how to measure it.
-
-**1) Fulfillment experience (OnTime -> Late_Small -> Late_Severe)**
-- **Finding:** 评分存在明显 **nonlinearity cliff**：`Late_Small (median=4.0)` -> `Late_Severe (median=1.0)`。
-- **Action:** 运营资源优先投入“避免恶化”（重点拯救 `Late_Small`），而不是把“提前送达”当作 KPI。
-- **KPI:** `Late_Severe` 占比、`Late_Small -> Late_Severe` 转化率、差评率（`has_review=1` 且 `review_score <= 2`）。
-
-**2) Growth under low repurchase constraint**
-- **Finding:** 在 **90d window + right-censoring defense** 口径下，平台复购偏低，“高频复购”不是安全假设。
-- **Action:** 用“首单品类 -> 90d 复购”衡量获客质量，对钩子品类倾斜预算（如 `fashion_bags_accessories`, `bed_bath_table`, `sports_leisure`）。
-- **KPI:** 新客 cohort 的复购率/LTV90、钩子品类的新客占比、获客渠道的 LTV/CAC。
-
-**3) Supply governance (metric decoupling + seller SLA)**
-- **Finding:** 晚到不等于卖家有责；`shipping_limit_date` vs `carrier_date` 可以做 **metric decoupling**（卖家 vs 物流）。
-- **Action:** 先做州内 **fairness calibration**，再用“GMV 贡献 x 相对违约率”治理矩阵做分层治理。
-- **Exposure:** 坏卖家经手 `price` 汇总（GMV proxy）`263,811.44`，平均 SLA 违约率 `29.6%`（治理收益在 notebook 做了敏感性分析）。
-
-**Execution Plan (From Analysis to Action)**
-- Product/Ops: 上线 `Late_Small` 预警队列与干预策略（改地址/补偿/加急），并以“避免恶化”为目标函数
-- Growth: 在投放侧引入钩子品类的质量权重（cohort 复购率/LTV90），做预算倾斜与路径实验
-- Supply: 按治理矩阵分层执行（清退/监管/扶持），并把 `performance_gap` 纳入卖家评级
-
-**Assumptions & Risks**
-- 数据是公开数据集（Olist），可验证方法论与口径，但不等同于线上实时系统；落地需要补充时区、退款/取消订单、客服触达等业务信号
-
----
-
-## Business Questions Answered
-
-This section maps each question to definitions and actions (question -> metric -> decision).
-
-1) **Fulfillment -> Review: where is the cliff?**
-- **Observation:** `Late_Small -> Late_Severe` 评分中位数从 `4.0` 跌到 `1.0`。
-- **Decision:** 把资源投在 **避免订单从轻微延迟恶化为严重延迟**（黄金救援期），而不是把“提前送达”当 KPI。
-
-2) **Growth under low repurchase: what is the best acquisition proxy?**
-- **Observation:** 以“首单品类 -> 90d 窗口复购”为口径，钩子品类显著高于大盘基准线（见 notebook 输出）。
-- **Decision:** 把获客预算从“只看 GMV”升级为“看 **首单带来的留存质量**”，用钩子品类做流量入口。
-
-3) **Accountability: carrier vs seller, and how to govern fairly?**
-- **Method:** 用 `shipping_limit_date` vs `carrier_date` 构建 `is_sla_breach`（卖家责任），并按州做基准校准（公平性）。
-- **Observation:** 坏卖家经手 `price` 汇总（GMV proxy）`263,811.44`，平均违约率 `29.6%`，存在集中治理空间。
-- **Decision:** 建立“**治理矩阵（GMV 贡献 x 相对违约率）**”，区分清退/重点监督/扶持/长尾自动化。
-
----
-
-## Reproducibility (Optional)
-
-**Delivery style:** notebook-first 交付；关键输出（图表/统计量/结论）已经固化在 notebooks 的执行结果中。
-
-如果你想在本地复现完整链路，请直接看：`docs/runbook.md`。
-
-**Fast path (optional):**
-- 配置环境变量（参考 `.env.example`）
-- Entrypoint: `python -m ecommerce_analytics_pipeline.ingest`
-- 构建数仓与 DQ：`sql/models/*` + `sql/dq/check_obt.sql`
-
----
-
-## Warehouse Models
-
-### `analysis.analysis_orders_obt` (Order-grain OBT)
-
-**Definition:** 以 `order_id` 为粒度，聚合并连接 orders / customers / items / payments / reviews，产出可直接做分析的订单宽表。
-
-**Key Metrics (precomputed in OBT):**
-- `delay_days`：`delivered_ts - estimated_ts`（正数=晚到；负数/0=提前或准时）
-- `delivery_status`：`OnTime` / `Late_Small` (<=3 days) / `Late_Severe` (>3 days)
-- `gmv`：payments 聚合后的订单 GMV（用于金额一致性校验）
-
-**Design Notes:**
-- **Aggregate before join:** items/payments 在 JOIN 前先 `GROUP BY order_id`，避免 fan-out。
-- **Defensive computations:** `NULLIF(items_cnt, 0)` 防止分母为 0；`COALESCE` 兜底空值。
-- **OLAP-friendly indexes:** `user_id`、`purchase_ts`、`delivery_status`、`purchase_month`。
-
-### `analysis.analysis_items_atomic` (Item-grain atomic)
-
-**Definition:** 以 (order_id, order_item_id) 为粒度，把 item 与 OBT 的体验指标（评分、延迟）拼起来，并带上品类英文名，为钩子品类/供给侧诊断提供最细颗粒度输入。
-
-### `analysis.analysis_user_first_order` / `analysis.analysis_user_first_order_categories` (User-grain + Bridge)
-
-**Definition:**
-- `analysis_user_first_order`：每个 `user_id` 的首个已送达订单（deterministic tie-breaker）。
-- `analysis_user_first_order_categories`：首单涉及的品类桥表（grain: `user_id, category`），用于“首单品类 -> 复购”分析，避免 item 粒度导致分母错误。
-
----
-
-## Data Quality Gate (DoD)
-
-**Run:**
-- `sql/dq/check_obt.sql`
-- `sql/dq/check_user_first_order.sql`（如你要跑“首单品类 -> 复购”链路）
-
-**What to check:** 你应该看到一行结果，重点盯这些字段（核心 + 防御性检查）：
-- `obt_rows` vs `raw_rows`：宽表没有“意外丢单”
-- `obt_gmv` vs `raw_gmv`：没有“金额被复制放大”
-- `duplicate_orders`：必须为 0（否则典型 fan-out）
-- `null_users` / `null_delays`：关键分析字段完整
-- `invalid_review_score_domain` / `has_review_mismatch`：评价字段口径正确（缺失不等于 0 分）
-- `ontime_but_positive_delay` / `late_but_non_positive_delay`：`delay_days` 与 `delivery_status` 一致性（避免 EXTRACT(DAY) 截断导致打架）
-
----
-
-## Analytics Notebooks
-
-**Canonical order (matches the repo):**
-`01_obt_feature_analysis` -> `02_repurchase_diagnosis` -> `03_seller_hook_analysis`.
-
-### 01 - OBT Feature Analysis (Fulfillment -> Review)
-
-**What it answers:** 履约指标如何传导到体验指标，以及 **nonlinearity cliff** 出现在哪个延迟区间。
-
-**Typical outputs & decisions:**
-- `Pearson=-0.2609` / `Spearman=-0.3157`：延迟与评分负相关且存在非线性（不要用“线性扣分”的直觉做决策）
-- Cliff：`Late_Small (median=4.0)` -> `Late_Severe (median=1.0)`
-- Decision：把监控/客服/物流资源优先投入在 **prevent deterioration**（拯救 `Late_Small`），而不是追求“更提前”
-
-### 02 - Repurchase Diagnosis (RFM/LTV + T-Test)
-
-**What it answers:** 在 **right-censoring** 防御下建立复购基线，并检验“体验指标 -> 留存/复购”的关联。
-
-**Typical outputs & decisions:**
-- 复购口径使用 **90d eligible window（right-censoring defense）**，避免数据集尾部低估
-- Welch's T-Test（`equal_var=False`）：更稳健地比较“复购 vs 流失”的平均延迟差异
-- Stratification defense：按州内分层（`primary_state`）降低地理混杂
-
-### 03 - Seller Hook Analysis (Hook Category + Seller Governance)
-
-**What it answers:** 找到获客“钩子”（首单品类 -> 复购），并把分析延伸到供给侧治理（**exposure/ROI sensitivity**）。
-
-**Typical outputs & decisions:**
-- Grain control：`analysis.analysis_user_first_order_categories`（user-category bridge）避免 item 粒度导致分母错误
-- Hooks：在“首单品类 -> 90d 复购”口径下，钩子品类显著高于基准线（见 notebook 输出）
-- Governance：`shipping_limit_date` vs `carrier_date` 构建 `is_sla_breach` 做 **metric decoupling**，再按 `seller_state` 做 **fairness calibration** 得到 `performance_gap`
-- ROI：治理矩阵（GMV 贡献 x 相对违约率）+ 对 breach reduction 和 intervention cost 做敏感性分析
-
----
-
-## Important Gotchas
-
-- **Schema mismatch**：SQL 使用 `Olist.olist_*`（未加引号）。在 Postgres 中，`Olist` 会解析成小写 `olist`。推荐统一使用 `RAW_SCHEMA=olist`。
-- **Destructive SQL**：`sql/models/20_obt/create_obt.sql` 会 `DROP SCHEMA IF EXISTS analysis;` 并重建。不要对共享/生产库运行。
-- **Secrets**：数据库密码请用环境变量或本地 `.env`；不要提交到版本库。
-- **.env template**：见 `.env.example`（只放占位符，不要放真实口令）。
-- **Time semantics**：履约链路包含多个 timestamp 字段；如迁移到真实业务数据，需要明确时区与缺失值规则。
-
----
+- 当前 `analysis.analysis_orders_obt` 只覆盖 delivered orders；因此“首单”在本仓库里指首个 delivered 订单，而不是首个下单事件。
+- 履约分析目前是历史诊断视角，不是实时监控系统；若未来接入在途履约事件，现有口径可继续扩展，但当前仓库并未实现。
+- 卖家治理分支依赖 `shipping_limit_date` vs `carrier_date` 的 seller-side SLA proxy、州内平均基准和 item `price` exposure proxy；它是优先级工具，不是完美归责。
+- notebook 01 中的 `ROC-AUC=0.6987` 是 in-sample 描述性结果，不应直接当作可上线的泛化表现。
+- 自动化测试较轻；本仓库更依赖 SQL DQ 门禁与 notebook 结果快照来支撑解释。
+- `data/` 与 `outputs/` 通常作为本地工作目录使用；当前仓库保留了部分快照资产便于直接浏览，但复现仍应以 [`docs/runbook.md`](docs/runbook.md) 为准。
+- Phase 1 的“导入完成”只在 8 个 core CSV 全部存在且成功落库时成立；若 ingestion 提前失败，应先修复 raw baseline，再继续 SQL / notebook。
 
 ## References
 
 - Olist dataset (Kaggle): https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
-- Project runbook: `docs/runbook.md`
+- Reproduction guide: [`docs/runbook.md`](docs/runbook.md)
+- Metric definitions: [`docs/data_dictionary.md`](docs/data_dictionary.md)
